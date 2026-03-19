@@ -80,7 +80,9 @@ RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"'
 
 COPY src ./src
 COPY requirements.txt ./
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
 
 # The wrapper listens on $PORT.
 # IMPORTANT: Do not set a default PORT here.
