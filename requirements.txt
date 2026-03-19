@@ -1,0 +1,5 @@
+yfinance
+pandas
+gspread
+finnhub-python
+google-auth
