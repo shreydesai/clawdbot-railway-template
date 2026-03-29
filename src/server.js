@@ -59,8 +59,8 @@ function startCompanion(name, dir, port) {
   console.log(`[wrapper] ${name} → :${port} (PID ${proc.pid})`);
 }
 
-startCompanion('Mission Control', '/data/workspace/mission-control', 3001);
-startCompanion('Cosmos',          '/data/workspace/cosmos',           3002);
+startCompanion('Mission Control', '/data/workspace/mission-control', 13001);
+startCompanion('Cosmos',          '/data/workspace/cosmos',           13002);
 
 // Gateway admin token (protects OpenClaw gateway + Control UI).
 // Must be stable across restarts. If not provided via env, persist it in the state dir.
@@ -1336,7 +1336,7 @@ const proxy = httpProxy.createProxyServer({
 });
 
 const missionControlProxy = httpProxy.createProxyServer({
-  target: 'http://127.0.0.1:3001',
+  target: 'http://127.0.0.1:13001',
   ws: true,
   xfwd: true,
 });
@@ -1351,7 +1351,7 @@ missionControlProxy.on('error', (err, _req, res) => {
 });
 
 const cosmosProxy = httpProxy.createProxyServer({
-  target: 'http://127.0.0.1:3002',
+  target: 'http://127.0.0.1:13002',
   ws: true,
   xfwd: true,
 });
