@@ -43,6 +43,25 @@ const WORKSPACE_DIR =
 // Protect /setup with a user-provided password.
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
+// --- Companion service launcher ---
+function startCompanion(name, dir, port) {
+  if (!fs.existsSync(dir)) {
+    console.log(`[wrapper] ${name} not found at ${dir}, skipping`);
+    return;
+  }
+  const proc = childProcess.spawn('node', ['server.js'], {
+    cwd: dir,
+    env: { ...process.env, PORT: String(port) },
+    stdio: 'inherit',
+    detached: false,
+  });
+  proc.on('exit', code => console.log(`[wrapper] ${name} exited with code ${code}`));
+  console.log(`[wrapper] ${name} → :${port} (PID ${proc.pid})`);
+}
+
+startCompanion('Mission Control', '/data/workspace/mission-control', 3001);
+startCompanion('Cosmos',          '/data/workspace/cosmos',           3002);
+
 // Gateway admin token (protects OpenClaw gateway + Control UI).
 // Must be stable across restarts. If not provided via env, persist it in the state dir.
 function resolveGatewayToken() {
@@ -1316,6 +1335,36 @@ const proxy = httpProxy.createProxyServer({
   xfwd: true,
 });
 
+const missionControlProxy = httpProxy.createProxyServer({
+  target: 'http://127.0.0.1:3001',
+  ws: true,
+  xfwd: true,
+});
+missionControlProxy.on('error', (err, _req, res) => {
+  console.error('[proxy/mission-control]', err);
+  try {
+    if (res && typeof res.writeHead === 'function' && !res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Mission Control unavailable\n');
+    }
+  } catch { /* ignore */ }
+});
+
+const cosmosProxy = httpProxy.createProxyServer({
+  target: 'http://127.0.0.1:3002',
+  ws: true,
+  xfwd: true,
+});
+cosmosProxy.on('error', (err, _req, res) => {
+  console.error('[proxy/cosmos]', err);
+  try {
+    if (res && typeof res.writeHead === 'function' && !res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Cosmos unavailable\n');
+    }
+  } catch { /* ignore */ }
+});
+
 proxy.on("error", (err, _req, res) => {
   console.error("[proxy]", err);
   try {
@@ -1385,6 +1434,14 @@ app.use(requireDashboardAuth, async (req, res) => {
       ].join("\n");
       return res.status(503).type("text/plain").send(hint);
     }
+  }
+
+  if (req.url.startsWith('/mission-control')) {
+    req.url = req.url.replace(/^\/mission-control/, '') || '/';
+    return missionControlProxy.web(req, res);
+  } else if (req.url.startsWith('/cosmos')) {
+    req.url = req.url.replace(/^\/cosmos/, '') || '/';
+    return cosmosProxy.web(req, res);
   }
 
   attachGatewayAuthHeader(req);
