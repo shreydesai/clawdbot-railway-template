@@ -1357,28 +1357,43 @@ app.post("/api/sensor", async (req, res) => {
   const ts = new Date().toISOString();
   const prompt = `[Pi Sensor Reading @ ${ts}]\n${JSON.stringify(data, null, 2)}`;
 
+  const gatewayHeaders = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+  };
+
+  // Discover available model IDs from the gateway so we don't hardcode a stale alias.
+  let modelId = "openclaw/default";
+  try {
+    const modelsRes = await fetch(`${GATEWAY_TARGET}/v1/models`, { headers: gatewayHeaders });
+    if (modelsRes.ok) {
+      const modelsJson = await modelsRes.json();
+      const first = modelsJson?.data?.[0]?.id;
+      if (first) modelId = first;
+    }
+  } catch {
+    // Non-fatal: fall back to default alias.
+  }
+
   try {
     const gatewayRes = await fetch(`${GATEWAY_TARGET}/v1/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-      },
+      headers: gatewayHeaders,
       body: JSON.stringify({
-        model: "openclaw/default",
+        model: modelId,
         messages: [{ role: "user", content: prompt }],
       }),
     });
 
     if (!gatewayRes.ok) {
       const txt = await gatewayRes.text().catch(() => "");
-      return res.status(502).json({ ok: false, error: `Gateway error ${gatewayRes.status}: ${txt}` });
+      return res.status(502).json({ ok: false, error: `Gateway error ${gatewayRes.status}: ${txt}`, modelId });
     }
 
     const result = await gatewayRes.json();
-    return res.json({ ok: true, agentResponse: result });
+    return res.json({ ok: true, agentResponse: result, modelId });
   } catch (err) {
-    return res.status(502).json({ ok: false, error: String(err) });
+    return res.status(502).json({ ok: false, error: String(err), modelId });
   }
 });
 
