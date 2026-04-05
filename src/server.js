@@ -1379,7 +1379,7 @@ app.post("/api/sensor", async (req, res) => {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${hooksToken}`,
       },
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, text: JSON.stringify(data) }),
     });
 
     const txt = await gatewayRes.text().catch(() => "");
