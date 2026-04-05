@@ -62,6 +62,18 @@ function startCompanion(name, dir, port) {
 startCompanion('Mission Control', '/data/workspace/mission-control', 13001);
 startCompanion('Cosmos',          '/data/workspace/cosmos',           13002);
 
+// Read the hooks.token from the OpenClaw config file (set during onboarding).
+// Used internally to forward Pi sensor payloads to the gateway hooks endpoint.
+function resolveHooksToken() {
+  try {
+    const raw = fs.readFileSync(configPath(), "utf8");
+    const cfg = JSON.parse(raw);
+    return cfg?.hooks?.token?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 // Gateway admin token (protects OpenClaw gateway + Control UI).
 // Must be stable across restarts. If not provided via env, persist it in the state dir.
 function resolveGatewayToken() {
@@ -1330,8 +1342,9 @@ app.post("/setup/import", requireSetupAuth, async (req, res) => {
 
 // --- Pi sensor ingest endpoint ---
 // Accepts sensor payloads from Raspberry Pi and forwards them to the
-// OpenClaw agent via the internal gateway's OpenAI-compatible API.
-// Auth: reuses the same OPENCLAW_GATEWAY_TOKEN — Pi sends it as Bearer.
+// OpenClaw gateway via the hooks endpoint (POST /hooks/pi).
+// Auth: Pi sends the OPENCLAW_GATEWAY_TOKEN as Bearer; internally we
+// forward using the hooks.token from the OpenClaw config.
 app.post("/api/sensor", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
@@ -1354,81 +1367,30 @@ app.post("/api/sensor", async (req, res) => {
     return res.status(503).json({ ok: false, error: `Gateway not ready: ${String(err)}` });
   }
 
-  const ts = new Date().toISOString();
-  const prompt = `[Pi Sensor Reading @ ${ts}]\n${JSON.stringify(data, null, 2)}`;
-
-  const gatewayHeaders = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-  };
-
-  // Discover available model IDs from the gateway so we don't hardcode a stale alias.
-  let modelId = "openclaw/default";
-  try {
-    const modelsRes = await fetch(`${GATEWAY_TARGET}/v1/models`, { headers: gatewayHeaders });
-    if (modelsRes.ok) {
-      const modelsJson = await modelsRes.json();
-      const first = modelsJson?.data?.[0]?.id;
-      if (first) modelId = first;
-    }
-  } catch {
-    // Non-fatal: fall back to default alias.
+  const hooksToken = resolveHooksToken();
+  if (!hooksToken) {
+    return res.status(503).json({ ok: false, error: "hooks.token not found in OpenClaw config" });
   }
 
   try {
-    const gatewayRes = await fetch(`${GATEWAY_TARGET}/v1/chat/completions`, {
+    const gatewayRes = await fetch(`${GATEWAY_TARGET}/hooks/pi`, {
       method: "POST",
-      headers: gatewayHeaders,
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: "user", content: prompt }],
-      }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${hooksToken}`,
+      },
+      body: JSON.stringify(data),
     });
 
+    const txt = await gatewayRes.text().catch(() => "");
     if (!gatewayRes.ok) {
-      const txt = await gatewayRes.text().catch(() => "");
-      return res.status(502).json({ ok: false, error: `Gateway error ${gatewayRes.status}: ${txt}`, modelId });
+      return res.status(502).json({ ok: false, error: `Gateway hooks error ${gatewayRes.status}: ${txt}` });
     }
 
-    const result = await gatewayRes.json();
-    return res.json({ ok: true, agentResponse: result, modelId });
+    return res.json({ ok: true, status: gatewayRes.status, body: txt });
   } catch (err) {
-    return res.status(502).json({ ok: false, error: String(err), modelId });
+    return res.status(502).json({ ok: false, error: String(err) });
   }
-});
-
-// Temporary diagnostic endpoint — probes the internal gateway to discover
-// which paths are live. Remove once Pi sensor ingest is working.
-app.get("/api/sensor/debug", async (req, res) => {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
-  if (token !== OPENCLAW_GATEWAY_TOKEN) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  const headers = { "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}` };
-  const probe = async (method, path, body) => {
-    try {
-      const opts = { method, headers: { ...headers, "Content-Type": "application/json" } };
-      if (body) opts.body = JSON.stringify(body);
-      const r = await fetch(`${GATEWAY_TARGET}${path}`, opts);
-      const txt = await r.text().catch(() => "");
-      return { status: r.status, body: txt.slice(0, 300) };
-    } catch (err) {
-      return { error: String(err) };
-    }
-  };
-
-  const results = await Promise.all([
-    probe("GET",  "/").then(r => ({ path: "GET /", ...r })),
-    probe("GET",  "/v1/models").then(r => ({ path: "GET /v1/models", ...r })),
-    probe("GET",  "/openclaw").then(r => ({ path: "GET /openclaw", ...r })),
-    probe("GET",  "/api").then(r => ({ path: "GET /api", ...r })),
-    probe("GET",  "/api/v1/models").then(r => ({ path: "GET /api/v1/models", ...r })),
-    probe("POST", "/hooks/pi", { source: "pi", test: true }).then(r => ({ path: "POST /hooks/pi", ...r })),
-  ]);
-
-  return res.json({ gatewayTarget: GATEWAY_TARGET, results });
 });
 
 // Proxy everything else to the gateway.
