@@ -1397,6 +1397,40 @@ app.post("/api/sensor", async (req, res) => {
   }
 });
 
+// Temporary diagnostic endpoint — probes the internal gateway to discover
+// which paths are live. Remove once Pi sensor ingest is working.
+app.get("/api/sensor/debug", async (req, res) => {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const headers = { "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}` };
+  const probe = async (method, path, body) => {
+    try {
+      const opts = { method, headers: { ...headers, "Content-Type": "application/json" } };
+      if (body) opts.body = JSON.stringify(body);
+      const r = await fetch(`${GATEWAY_TARGET}${path}`, opts);
+      const txt = await r.text().catch(() => "");
+      return { status: r.status, body: txt.slice(0, 300) };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  };
+
+  const results = await Promise.all([
+    probe("GET",  "/").then(r => ({ path: "GET /", ...r })),
+    probe("GET",  "/v1/models").then(r => ({ path: "GET /v1/models", ...r })),
+    probe("GET",  "/openclaw").then(r => ({ path: "GET /openclaw", ...r })),
+    probe("GET",  "/api").then(r => ({ path: "GET /api", ...r })),
+    probe("GET",  "/api/v1/models").then(r => ({ path: "GET /api/v1/models", ...r })),
+    probe("POST", "/hooks/pi", { source: "pi", test: true }).then(r => ({ path: "POST /hooks/pi", ...r })),
+  ]);
+
+  return res.json({ gatewayTarget: GATEWAY_TARGET, results });
+});
+
 // Proxy everything else to the gateway.
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
@@ -1452,7 +1486,7 @@ proxy.on("error", (err, _req, res) => {
 function requireDashboardAuth(req, res, next) {
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
   if (req.path.startsWith("/hooks")) return next(); // allow OpenClaw webhook endpoints to bypass dashboard auth
-  if (req.path.startsWith("/api/sensor")) return next(); // allow Pi sensor ingest to bypass dashboard auth
+  if (req.path.startsWith("/api/sensor")) return next(); // allow Pi sensor ingest (and debug) to bypass dashboard auth
   if (!SETUP_PASSWORD) return next(); // no password configured → open
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
