@@ -1328,6 +1328,60 @@ app.post("/setup/import", requireSetupAuth, async (req, res) => {
   }
 });
 
+// --- Pi sensor ingest endpoint ---
+// Accepts sensor payloads from Raspberry Pi and forwards them to the
+// OpenClaw agent via the internal gateway's OpenAI-compatible API.
+// Auth: reuses the same OPENCLAW_GATEWAY_TOKEN — Pi sends it as Bearer.
+app.post("/api/sensor", async (req, res) => {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const data = req.body;
+  if (!data || typeof data !== "object") {
+    return res.status(400).json({ ok: false, error: "Expected JSON body" });
+  }
+
+  if (!isConfigured()) {
+    return res.status(503).json({ ok: false, error: "OpenClaw not configured" });
+  }
+
+  try {
+    await ensureGatewayRunning();
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: `Gateway not ready: ${String(err)}` });
+  }
+
+  const ts = new Date().toISOString();
+  const prompt = `[Pi Sensor Reading @ ${ts}]\n${JSON.stringify(data, null, 2)}`;
+
+  try {
+    const gatewayRes = await fetch(`${GATEWAY_TARGET}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+      },
+      body: JSON.stringify({
+        model: "openclaw/default",
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!gatewayRes.ok) {
+      const txt = await gatewayRes.text().catch(() => "");
+      return res.status(502).json({ ok: false, error: `Gateway error ${gatewayRes.status}: ${txt}` });
+    }
+
+    const result = await gatewayRes.json();
+    return res.json({ ok: true, agentResponse: result });
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: String(err) });
+  }
+});
+
 // Proxy everything else to the gateway.
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
@@ -1383,6 +1437,7 @@ proxy.on("error", (err, _req, res) => {
 function requireDashboardAuth(req, res, next) {
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
   if (req.path.startsWith("/hooks")) return next(); // allow OpenClaw webhook endpoints to bypass dashboard auth
+  if (req.path.startsWith("/api/sensor")) return next(); // allow Pi sensor ingest to bypass dashboard auth
   if (!SETUP_PASSWORD) return next(); // no password configured → open
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
